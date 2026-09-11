@@ -178,9 +178,9 @@ func move(dir: Vector2) -> void:
 ```yaml
 # docgen.yaml（位于接入本工具的模块项目内）
 engine_bin_path: "<已编译含本模块的编辑器路径或所在目录>"
-repo_root:     "<模块项目根目录>"
+project_root:   "<模块项目根目录>"
 classes_dir:   "doc/classes"
-schema:        "tools/godot_docs_gen/schema/class.xsd"  # 重写 XML 的 noNamespaceSchemaLocation
+schema:        "<相对 project_root 的 class.xsd 路径>"  # 重写 XML 的 noNamespaceSchemaLocation
 headers:       "**/*.h"
 md_dir:        "doc/source/api"
 ```

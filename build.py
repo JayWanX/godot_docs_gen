@@ -14,10 +14,10 @@
 
 配置字段：
     engine_bin_path  已编译含本模块的 Godot 编辑器路径（可执行文件或所在目录，可被 -g 覆盖）
-    repo_root       Godot 工作区根（doctool 与相对路径的基准）
-    classes_dir     模块类 XML 输出目录（相对 repo_root 或绝对路径）
-    headers         注入注释的源文件 glob，多个用英文逗号分隔（相对 repo_root）
-    md_dir          Markdown API 输出目录（相对 repo_root 或绝对路径）
+    project_root    模块项目根（doctool 与相对路径的基准）
+    classes_dir     模块类 XML 输出目录（相对 project_root 或绝对路径）
+    headers         注入注释的源文件 glob，多个用英文逗号分隔（相对 project_root）
+    md_dir          Markdown API 输出目录（相对 project_root 或绝对路径）
 """
 
 import getopt
@@ -120,7 +120,7 @@ def _resolve(base, value):
 
 
 def run_doctool(cfg, godot_executable, verbose):
-    repo_root = Path(cfg["repo_root"])
+    project_root = Path(cfg["project_root"])
     if not godot_executable:
         bin_path = Path(cfg.get("engine_bin_path")) if cfg.get("engine_bin_path") else None
         if bin_path is not None and bin_path.is_file():
@@ -137,7 +137,7 @@ def run_doctool(cfg, godot_executable, verbose):
         print("Found Godot at: %s" % godot_executable)
 
     # --doctool 必须作为独立参数（无前后空格），否则被当作位置参数而静默失败
-    args = [str(godot_executable), "--doctool", str(repo_root)]
+    args = [str(godot_executable), "--doctool", str(project_root)]
     if verbose:
         print("Running: ", args)
     result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -147,7 +147,7 @@ def run_doctool(cfg, godot_executable, verbose):
         print("忽略与 extensions 类无关的 Godot 文件错误。")
 
     # doctool 只生成签名骨架，描述需从源码注释注入
-    classes_dir = _resolve(repo_root, cfg["classes_dir"])
+    classes_dir = _resolve(project_root, cfg["classes_dir"])
     headers = cfg.get("headers", "")
     tool = Path(__file__).resolve().parent / "comment_doc_gen.py"
     globs = [g for g in headers.split(",") if g.strip()]
@@ -155,9 +155,9 @@ def run_doctool(cfg, godot_executable, verbose):
         print("警告: 未配置 headers，跳过注释注入")
         return 0
     cmd = [sys.executable, str(tool), "--classes-dir", str(classes_dir),
-           "--headers"] + [str(_resolve(repo_root, g.strip())) for g in globs]
+           "--headers"] + [str(_resolve(project_root, g.strip())) for g in globs]
     if cfg.get("schema"):
-        cmd += ["--schema", str(_resolve(repo_root, cfg["schema"]))]
+        cmd += ["--schema", str(_resolve(project_root, cfg["schema"]))]
     if verbose:
         cmd.append("--verbose")
     subprocess.check_call(cmd)
@@ -165,9 +165,9 @@ def run_doctool(cfg, godot_executable, verbose):
 
 
 def run_xml_to_markdown(cfg, verbose):
-    repo_root = Path(cfg["repo_root"])
-    src = _resolve(repo_root, cfg["classes_dir"])
-    dst = _resolve(repo_root, cfg["md_dir"])
+    project_root = Path(cfg["project_root"])
+    src = _resolve(project_root, cfg["classes_dir"])
+    dst = _resolve(project_root, cfg["md_dir"])
     xml_to_markdown.process_xml_folder(src, dst, verbose)
     return 0
 
@@ -175,7 +175,7 @@ def run_xml_to_markdown(cfg, verbose):
 def print_usage():
     print("\n用法: python build.py -c 配置文件 [-d] [-a] [-h] [-v] [-g godot路径]")
     print()
-    print("\t-c, --config PATH  配置文件（必填），YAML/JSON，含 engine_bin_path/repo_root/classes_dir/headers/md_dir")
+    print("\t-c, --config PATH  配置文件（必填），YAML/JSON，含 engine_bin_path/project_root/classes_dir/headers/md_dir")
     print("\t-d                 运行 Godot doctool 更新 XML 类数据，并注入源码注释")
     print("\t-a                 从 XML 类数据生成 Markdown API 文档")
     print("\t-h, --help         打印帮助")
@@ -220,7 +220,7 @@ def main(argv=None):
         return 1
 
     cfg = _load_config(config_path)
-    for key in ("repo_root", "classes_dir", "md_dir"):
+    for key in ("project_root", "classes_dir", "md_dir"):
         if key not in cfg:
             print("错误: 配置缺少必填项 %s" % key)
             return 1
