@@ -32,6 +32,7 @@ class DocClass:
     class_comment: list = field(default_factory=list)
     method_docs: dict = field(default_factory=dict)
     member_docs: dict = field(default_factory=dict)
+    constant_docs: dict = field(default_factory=dict)
 
 
 class ParserBase:
@@ -74,6 +75,8 @@ class ParserBase:
                     doc.method_docs[name] = list(pending)
                 elif kind == "member" and pending:
                     doc.member_docs[name] = list(pending)
+                elif kind == "constant" and pending:
+                    doc.constant_docs[name] = list(pending)
                 pending = []
                 continue
             # 非类/方法/成员的行：若是实际代码则丢弃注释块（文档块结束）。
@@ -87,19 +90,25 @@ class ParserBase:
 
 
 class CppParser(ParserBase):
-    """C++ 头文件解析：/// 或 ## 文档注释；类声明 / 方法 / 成员变量。"""
+    """C++ 头文件解析：/// 或 ## 文档注释；类/方法/成员变量/枚举常量。"""
 
     COMMENT_RE = re.compile(r"^\s*(?:///+\s?(.*)|\#\#+\s?(.*))$")
     NEUTRAL_RE = re.compile(r"^\s*(?://|/\*|\*|#)")
     CLASS_RE = re.compile(r"^\s*class\s+([A-Za-z_]\w*)\s*(?::|\{)")
     GDVIRTUAL_RE = re.compile(r"^\s*GDVIRTUAL\w*\s*\(([A-Za-z_]\w*)\)")
     MEMBER_RE = re.compile(r"^\s*(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*(?:\s*<[^>]*>)?\s+([A-Za-z_]\w*)(?:\s*=\s*[^;]+?)?\s*;")
+    ENUM_OPEN_RE = re.compile(r"^\s*enum(?:\s+class)?(?:\s+\w*)?\s*\{")
+    ENUM_END_RE = re.compile(r"^\s*\}")
+    CONSTANT_RE = re.compile(r"^\s*([A-Za-z_]\w*)")
 
     def __init__(self, regexes=None):
         regexes = regexes or {}
+        self._in_enum = False
         self.set("class_re", regexes.get("class_re"))
         self.set("gdvirtual_re", regexes.get("gdvirtual_re"))
         self.set("member_re", regexes.get("member_re"))
+        self.set("enum_open_re", regexes.get("enum_open_re"))
+        self.set("constant_re", regexes.get("constant_re"))
 
     def set(self, attr, pattern):
         if pattern:
@@ -118,6 +127,18 @@ class CppParser(ParserBase):
         m = self.CLASS_RE.match(line)
         if m:
             return ("class", m.group(1))
+        if self._in_enum:
+            # 枚举体内：收尾行退出状态，标识符行归为枚举常量
+            if self.ENUM_END_RE.match(line):
+                self._in_enum = False
+                return None
+            m = self.CONSTANT_RE.match(line)
+            if m:
+                return ("constant", m.group(1))
+            return None
+        if self.ENUM_OPEN_RE.match(line):
+            self._in_enum = True
+            return None
         m = self.GDVIRTUAL_RE.match(line)
         if m:
             return ("method", m.group(1))
@@ -324,17 +345,26 @@ def inject_doc(xml_content, doc, indent="\t"):
         xml_content = xml_content[:inner_start] + body + xml_content[inner_end:]
 
     # 成员描述：<member name>...</member>（含自闭合展开）
-    for name, raw in doc.member_docs.items():
+    xml_content = _inject_elements(xml_content, doc.member_docs, "member", indent)
+    # 枚举/类常量描述：<constant name>...</constant>
+    xml_content = _inject_elements(xml_content, doc.constant_docs, "constant", indent)
+    return xml_content
+
+
+def _inject_elements(xml_content, docs, tag, indent):
+    """把 {name: 描述} 注入 <tag name>...</tag>，自闭合则展开。返回处理后的内容。"""
+    for name, raw in docs.items():
         body = _indent(_clean(raw), indent)
-        pair = re.compile(r'(<member\s+name="%s"[^>]*>)(?P<body>.*?)(</member>)' % re.escape(name), re.DOTALL)
+        pair = re.compile(r'(<%s\s+name="%s"[^>]*>)(?P<body>.*?)(</%s>)'
+                          % (re.escape(tag), re.escape(name), re.escape(tag)), re.DOTALL)
         m = pair.search(xml_content)
         if m:
             xml_content = xml_content[:m.start()] + m.group(1) + body + m.group(3) + xml_content[m.end():]
             continue
-        selfc = re.compile(r'(<member\s+name="%s")([^>]*)/>' % re.escape(name))
+        selfc = re.compile(r'(<%s\s+name="%s")([^>]*)/>' % (re.escape(tag), re.escape(name)))
         m = selfc.search(xml_content)
         if m:
-            xml_content = xml_content[:m.start()] + m.group(1) + m.group(2) + ">\n" + body + "\n" + indent + "</member>" + xml_content[m.end():]
+            xml_content = xml_content[:m.start()] + m.group(1) + m.group(2) + ">\n" + body + "\n" + indent + "</%s>" % tag + xml_content[m.end():]
     return xml_content
 
 
@@ -399,7 +429,7 @@ def main(argv=None):
             print("读取失败 %s: %s" % (path, e))
             continue
         doc = parser().parse(lines)
-        if not doc.name or (not doc.class_comment and not doc.method_docs and not doc.member_docs):
+        if not doc.name or (not doc.class_comment and not doc.method_docs and not doc.member_docs and not doc.constant_docs):
             continue
         xml_path = os.path.join(classes_dir, doc.name + ".xml")
         if args.verbose:

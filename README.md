@@ -118,6 +118,7 @@ sources:
 - 类声明匹配 `class Name :` 或 `class Name {`（前向声明 `class X;` 不匹配）。
 - 方法名通过第一个 `(` 前的最后一个标识符启发式提取；`GDVIRTUAL` 宏取括号内函数名。
 - 成员变量匹配 `类型 成员名;` 或 `类型 成员名 = 默认;`。
+- 枚举常量：`enum Name {` 体内的枚举项被识别，注释注入对应的 `<constant>`。
 
 ```cpp
 /// 字典工具类：提供字典结构相关的静态方法，不可实例化。
@@ -128,6 +129,16 @@ static bool has_same_keys_structure(Dictionary dict1, Dictionary dict2);
 
 /// 设置路径（含点号分隔的层级名）
 String setting_path = "";
+
+/// 释放模式
+enum FreeMode {
+	/// 立即释放源节点。
+	FREE_MODE_INSTANT = 0,
+	/// 延迟释放源节点（当前帧结束）。
+	FREE_MODE_DEFERRED = 1,
+	/// 不释放源节点。
+	FREE_MODE_NONE = 2,
+};
 ```
 
 ### GDScript（`GDScriptParser`）
