@@ -176,9 +176,10 @@ func move(dir: Vector2) -> void:
 所有路径由项目内配置 `docgen.yaml` 提供（以下值为仓库相对路径或占位符）：
 
 ```yaml
-# docgen.yaml（位于接入本工具的模块项目内）
+# docgen.yaml（位于接入本工具的模块项目内，通常放到 doc/ 下）
 engine_bin_path: "<已编译含本模块的编辑器路径或所在目录>"
-project_root:   "<模块项目根目录>"
+# project_root 可缺省：默认取当前工作目录（在模块项目根执行即可）
+# project_root: "<模块项目根目录>"
 classes_dir:   "doc/classes"
 schema:        "<相对 project_root 的 class.xsd 路径>"  # 重写 XML 的 noNamespaceSchemaLocation
 headers:       "**/*.h"

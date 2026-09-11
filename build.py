@@ -14,7 +14,7 @@
 
 配置字段：
     engine_bin_path  已编译含本模块的 Godot 编辑器路径（可执行文件或所在目录，可被 -g 覆盖）
-    project_root    模块项目根（doctool 与相对路径的基准）
+    project_root    模块项目根（doctool 与相对路径的基准）；缺省取当前工作目录
     classes_dir     模块类 XML 输出目录（相对 project_root 或绝对路径）
     headers         注入注释的源文件 glob，多个用英文逗号分隔（相对 project_root）
     md_dir          Markdown API 输出目录（相对 project_root 或绝对路径）
@@ -119,8 +119,14 @@ def _resolve(base, value):
     return p if p.is_absolute() else base / p
 
 
+def _project_root(cfg):
+    """项目根：配置缺省时取当前工作目录。"""
+    root = cfg.get("project_root")
+    return Path(root) if root else Path.cwd()
+
+
 def run_doctool(cfg, godot_executable, verbose):
-    project_root = Path(cfg["project_root"])
+    project_root = _project_root(cfg)
     if not godot_executable:
         bin_path = Path(cfg.get("engine_bin_path")) if cfg.get("engine_bin_path") else None
         if bin_path is not None and bin_path.is_file():
@@ -165,7 +171,7 @@ def run_doctool(cfg, godot_executable, verbose):
 
 
 def run_xml_to_markdown(cfg, verbose):
-    project_root = Path(cfg["project_root"])
+    project_root = _project_root(cfg)
     src = _resolve(project_root, cfg["classes_dir"])
     dst = _resolve(project_root, cfg["md_dir"])
     xml_to_markdown.process_xml_folder(src, dst, verbose)
@@ -220,7 +226,7 @@ def main(argv=None):
         return 1
 
     cfg = _load_config(config_path)
-    for key in ("project_root", "classes_dir", "md_dir"):
+    for key in ("classes_dir", "md_dir"):
         if key not in cfg:
             print("错误: 配置缺少必填项 %s" % key)
             return 1
