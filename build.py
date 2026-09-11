@@ -23,6 +23,7 @@
 import getopt
 import os
 import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -125,6 +126,26 @@ def _project_root(cfg):
     return Path(root) if root else Path.cwd()
 
 
+def _sync_schema(project_root, verbose):
+    """把工具集自带 class.xsd 复制到 <project_root>/doc/class.xsd，返回项目内副本路径。
+
+    使生成的 XML 引用项目内的 schema，避免引用项目外文件。
+    """
+    src = Path(__file__).resolve().parent / "schema" / "class.xsd"
+    if not src.is_file():
+        print("警告: 未找到工具集自带 schema: %s" % src)
+        return None
+    dst = project_root / "doc" / "class.xsd"
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst)
+        if verbose:
+            print("schema -> %s" % dst)
+    except OSError as e:
+        print("警告: 复制 schema 失败: %s" % e)
+    return dst
+
+
 def run_doctool(cfg, godot_executable, verbose):
     project_root = _project_root(cfg)
     if not godot_executable:
@@ -160,10 +181,14 @@ def run_doctool(cfg, godot_executable, verbose):
     if not globs:
         print("警告: 未配置 headers，跳过注释注入")
         return 0
+
+    # 把工具集自带 schema 复制进项目内（<project_root>/doc/class.xsd），
+    # 让 XML 引用本项目内的副本，避免引用项目外文件。
+    local_schema = _sync_schema(project_root, verbose)
     cmd = [sys.executable, str(tool), "--classes-dir", str(classes_dir),
            "--headers"] + [str(_resolve(project_root, g.strip())) for g in globs]
-    if cfg.get("schema"):
-        cmd += ["--schema", str(_resolve(project_root, cfg["schema"]))]
+    if local_schema:
+        cmd += ["--schema", str(local_schema)]
     if verbose:
         cmd.append("--verbose")
     subprocess.check_call(cmd)

@@ -181,9 +181,10 @@ engine_bin_path: "<已编译含本模块的编辑器路径或所在目录>"
 # project_root 可缺省：默认取当前工作目录（在模块项目根执行即可）
 # project_root: "<模块项目根目录>"
 classes_dir:   "doc/classes"
-schema:        "<相对 project_root 的 class.xsd 路径>"  # 重写 XML 的 noNamespaceSchemaLocation
 headers:       "**/*.h"
 md_dir:        "doc/source/api"
+# class.xsd 无需配置：build.py 会把工具集自带的 schema 复制到 <project_root>/doc/class.xsd，
+# 并让生成的 XML 引用该项目内副本，不引用项目外文件。
 ```
 
 `engine_bin_path` 可给**可执行文件完整路径**（如 `bin/godot.windows.editor.double.x86_64.console.exe`），
