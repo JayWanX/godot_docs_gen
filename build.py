@@ -156,6 +156,8 @@ def run_doctool(cfg, godot_executable, verbose):
         return 0
     cmd = [sys.executable, str(tool), "--classes-dir", str(classes_dir),
            "--headers"] + [str(_resolve(repo_root, g.strip())) for g in globs]
+    if cfg.get("schema"):
+        cmd += ["--schema", str(_resolve(repo_root, cfg["schema"]))]
     if verbose:
         cmd.append("--verbose")
     subprocess.check_call(cmd)

@@ -65,7 +65,7 @@ python comment_doc_gen.py --config docgen.yaml --dry-run --verbose
 | `--config PATH` | YAML/JSON 配置文件路径；省略时自动查找 `comment_doc_gen.{yaml,yml,json}`，仍无则用内置默认 |
 | `--headers GLOB` | 覆盖源文件 glob（可多个），按扩展名自动选语言 |
 | `--classes-dir DIR` | 覆盖类 XML 输出目录 |
-| `--schema PATH` | 覆盖 `class.xsd` 路径（预留，当前仅提示/未来校验） |
+| `--schema PATH` | `class.xsd` 路径（相对或绝对）；注入后把 XML 的 `noNamespaceSchemaLocation` 重写指向它 |
 | `--dry-run` | 只打印将处理的项目，不写文件 |
 | `--verbose` | 打印每个源文件 → XML 的映射与统计 |
 
@@ -76,8 +76,8 @@ python comment_doc_gen.py --config docgen.yaml --dry-run --verbose
 ```yaml
 # 类 XML 输出目录
 classes_dir: doc/classes
-# 可选：class.xsd 路径
-schema: null
+# 可选：class.xsd 路径；注入后重写每个 XML 的 noNamespaceSchemaLocation 指向它
+schema: schema/class.xsd
 # 源文件 → 语言映射；glob 可含 ** 递归匹配，逗号分隔多个模式
 sources:
   - glob: "**/*.h, **/*.hpp"
@@ -180,6 +180,7 @@ func move(dir: Vector2) -> void:
 engine_bin_path: "<已编译含本模块的编辑器路径或所在目录>"
 repo_root:     "<模块项目根目录>"
 classes_dir:   "doc/classes"
+schema:        "tools/godot_docs_gen/schema/class.xsd"  # 重写 XML 的 noNamespaceSchemaLocation
 headers:       "**/*.h"
 md_dir:        "doc/source/api"
 ```

@@ -338,7 +338,18 @@ def inject_doc(xml_content, doc, indent="\t"):
     return xml_content
 
 
-def match_class_xml(xml_path, doc, verbose=False):
+def _rewrite_schema_attribute(xml_content, schema, classes_dir):
+    """将 XML 根元素的 noNamespaceSchemaLocation 重写为指向 schema 的相对路径。"""
+    if not schema or not classes_dir:
+        return xml_content
+    href = os.path.relpath(os.path.abspath(schema), start=os.path.abspath(classes_dir)).replace("\\", "/")
+    return re.sub(
+        r'(<class\s+[^>]*?xsi:noNamespaceSchemaLocation=")[^"]*(")',
+        lambda m: m.group(1) + href + m.group(2),
+        xml_content, count=1)
+
+
+def match_class_xml(xml_path, doc, verbose=False, schema=None, classes_dir=None):
     """对单个 XML 文件注入单个源文件的文档。返回是否写入。"""
     if not os.path.exists(xml_path):
         if verbose:
@@ -350,6 +361,7 @@ def match_class_xml(xml_path, doc, verbose=False):
     if not cm:
         return False
     new_content = inject_doc(content, doc)
+    new_content = _rewrite_schema_attribute(new_content, schema, classes_dir)
     if new_content == content:
         return False
     with open(xml_path, "w", encoding="utf-8") as f:
@@ -364,13 +376,14 @@ def main(argv=None):
     ap.add_argument("--config", help="YAML/JSON 配置文件路径")
     ap.add_argument("--headers", nargs="*", help="覆盖源文件 glob（按扩展名自动选语言）")
     ap.add_argument("--classes-dir", help="覆盖类 XML 输出目录")
-    ap.add_argument("--schema", help="覆盖 class.xsd 路径（仅提示/未来校验）")
+    ap.add_argument("--schema", help="class.xsd 路径（相对或绝对），重写 XML 的 noNamespaceSchemaLocation")
     ap.add_argument("--dry-run", action="store_true", help="只打印将要处理的项目，不写文件")
     ap.add_argument("--verbose", action="store_true", help="打印详细过程")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
     classes_dir = args.classes_dir or cfg.get("classes_dir") or "doc/classes"
+    schema = args.schema if args.schema is not None else cfg.get("schema")
 
     sources = discover_sources(cfg, args.headers)
     if not sources:
@@ -394,7 +407,7 @@ def main(argv=None):
                 path, xml_path, len(doc.member_docs), len(doc.method_docs)))
         if args.dry_run:
             continue
-        if match_class_xml(xml_path, doc, args.verbose):
+        if match_class_xml(xml_path, doc, args.verbose, schema=schema, classes_dir=classes_dir):
             patched += 1
     print("Patched %d XML files" % patched)
     return 0
