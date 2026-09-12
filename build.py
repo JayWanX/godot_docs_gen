@@ -146,20 +146,48 @@ def _sync_schema(project_root, verbose):
     return dst
 
 
-def _prune_classes(classes_dir, cfg):
+def _prune_classes(classes_dir, doc_classes):
     """仅保留本模块的类 XML，删除 doctool 倾泻到 classes_dir 的其它引擎类。
 
-    [param cfg] 配置，可含 doc_classes（字符串逗号分隔或列表）。
+    [param classes_dir] 类 XML 目录[br]
+    [param doc_classes] 本模块公开类名列表。
     """
-    keep = cfg.get("doc_classes")
-    if not keep:
+    if not doc_classes:
         return
-    if isinstance(keep, str):
-        keep = [k.strip() for k in keep.split(",") if k.strip()]
-    keep_set = set(keep)
+    keep_set = set(doc_classes)
     for path in classes_dir.rglob("*.xml"):
         if path.stem not in keep_set:
             path.unlink()
+
+
+def _discover_doc_classes(project_root, cfg):
+    """获取本模块公开类清单：优先用配置 doc_classes（覆盖），否则从 config.py 的 get_doc_classes() 自动读取。
+
+    采用 AST 静态解析而非 import，避免执行模块配置的任意代码。
+    [param project_root] 模块项目根目录[br]
+    [param cfg] 配置（可含 doc_classes，字符串逗号分隔或列表）[br]
+    [return] 类名列表。
+    """
+    keep = cfg.get("doc_classes")
+    if isinstance(keep, str):
+        keep = [k.strip() for k in keep.split(",") if k.strip()]
+    doc_classes = list(keep) if keep else []
+    if doc_classes:
+        return doc_classes
+
+    cfg_path = project_root / "config.py"
+    if cfg_path.is_file():
+        import ast
+        tree = ast.parse(cfg_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "get_doc_classes":
+                for stmt in node.body:
+                    if isinstance(stmt, ast.Return) and isinstance(stmt.value, (ast.List, ast.Tuple)):
+                        doc_classes = [e.value for e in stmt.value.elts
+                                       if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+                        if doc_classes:
+                            return doc_classes
+    return doc_classes
 
 
 def run_doctool(cfg, godot_executable, verbose):
@@ -191,8 +219,8 @@ def run_doctool(cfg, godot_executable, verbose):
 
     # doctool 只生成签名骨架，描述需从源码注释注入
     classes_dir = _resolve(project_root, cfg["classes_dir"])
-    # doctool 会倾泻全部编译类，只保留本模块的类 XML
-    _prune_classes(classes_dir, cfg)
+    # doctool 会倾泻全部编译类，仅保留本模块的类 XML（类清单自动取 get_doc_classes，可用配置覆盖）
+    _prune_classes(classes_dir, _discover_doc_classes(project_root, cfg))
     headers = cfg.get("headers", "")
     tool = Path(__file__).resolve().parent / "comment_doc_gen.py"
     globs = [g for g in headers.split(",") if g.strip()]
