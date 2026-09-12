@@ -146,6 +146,22 @@ def _sync_schema(project_root, verbose):
     return dst
 
 
+def _prune_classes(classes_dir, cfg):
+    """仅保留本模块的类 XML，删除 doctool 倾泻到 classes_dir 的其它引擎类。
+
+    [param cfg] 配置，可含 doc_classes（字符串逗号分隔或列表）。
+    """
+    keep = cfg.get("doc_classes")
+    if not keep:
+        return
+    if isinstance(keep, str):
+        keep = [k.strip() for k in keep.split(",") if k.strip()]
+    keep_set = set(keep)
+    for path in classes_dir.rglob("*.xml"):
+        if path.stem not in keep_set:
+            path.unlink()
+
+
 def run_doctool(cfg, godot_executable, verbose):
     project_root = _project_root(cfg)
     if not godot_executable:
@@ -175,6 +191,8 @@ def run_doctool(cfg, godot_executable, verbose):
 
     # doctool 只生成签名骨架，描述需从源码注释注入
     classes_dir = _resolve(project_root, cfg["classes_dir"])
+    # doctool 会倾泻全部编译类，只保留本模块的类 XML
+    _prune_classes(classes_dir, cfg)
     headers = cfg.get("headers", "")
     tool = Path(__file__).resolve().parent / "comment_doc_gen.py"
     globs = [g for g in headers.split(",") if g.strip()]

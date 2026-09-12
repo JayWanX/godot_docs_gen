@@ -191,12 +191,16 @@ func move(dir: Vector2) -> void:
 engine_bin_path: "<已编译含本模块的编辑器路径或所在目录>"
 # project_root 可缺省：默认取当前工作目录（在模块项目根执行即可）
 # project_root: "<模块项目根目录>"
+doc_classes:   # 可选：本模块公开类（对应 config.py get_doc_classes）
+  - MyClassA
+  - MyClassB
 classes_dir:   "doc/classes"
 headers:       "**/*.h"
 md_dir:        "doc/source/api"
-# class.xsd 无需配置：build.py 会把工具集自带的 schema 复制到 <project_root>/doc/class.xsd，
-# 并让生成的 XML 引用该项目内副本，不引用项目外文件。
 ```
+class.xsd 无需配置：build.py 会把工具集自带的 schema 复制到 `<project_root>/doc/class.xsd`，
+并让生成的 XML 引用该项目内副本，不引用项目外文件。若配置了 `doc_classes`，doctool 后会自动
+只保留本模块的类 XML，避免把引擎的其它类文档倾泻进 `doc/classes`。
 
 `engine_bin_path` 可给**可执行文件完整路径**（如 `bin/godot.windows.editor.double.x86_64.console.exe`），
 也可给**所在目录**（自动在 `editor`/`editor.double`/`dev`/`console` 各变体中选最新可用项）。`-g` 为最高优先级的覆盖。
