@@ -201,20 +201,37 @@ def run_doctool(cfg, godot_executable, verbose):
     if verbose:
         print("Found Godot at: %s" % godot_executable)
 
-    # --doctool 必须作为独立参数（无前后空格），否则被当作位置参数而静默失败
-    args = [str(godot_executable), "--doctool", str(project_root)]
-    if verbose:
-        print("Running: ", args)
-    result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            universal_newlines=True)
-    if verbose:
-        print(result.stdout)
-        print("忽略与 extensions 类无关的 Godot 文件错误。")
+    # doctool 会把引擎全部内置模块（csg/gdscript/gltf 等）的类文档按相对路径
+    # modules/<m>/doc_classes 写到 --doctool 目标目录下；若直接在模块根跑会虚构出 modules/。
+    # 因此用项目内临时目录承接输出，跑完仅把本模块的类 XML 合并回 classes_dir，其余全部丢弃。
+    scratch = project_root / ".doctool_tmp"
+    shutil.rmtree(scratch, ignore_errors=True)
+    scratch.mkdir(parents=True)
 
-    # doctool 只生成签名骨架，描述需从源码注释注入
-    classes_dir = _resolve(project_root, cfg["classes_dir"])
-    # doctool 会倾泻全部编译类，仅保留本模块的类 XML（清单自动取 config.py 的 get_doc_classes()）
-    _prune_classes(classes_dir, _discover_doc_classes(project_root))
+    try:
+        # --doctool 必须作为独立参数（无前后空格），否则被当作位置参数而静默失败
+        args = [str(godot_executable), "--doctool", str(scratch)]
+        if verbose:
+            print("Running: ", args)
+        result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                universal_newlines=True)
+        if verbose:
+            print(result.stdout)
+            print("忽略与模块类无关的 Godot 文件错误。")
+
+        # doctool 只生成签名骨架，描述需从源码注释注入
+        classes_dir = _resolve(project_root, cfg["classes_dir"])
+
+        # 从临时索引中仅保留本模块类 XML 并合并进 classes_dir
+        index_dir = scratch / "doc" / "classes"
+        if index_dir.is_dir():
+            _prune_classes(index_dir, _discover_doc_classes(project_root))
+            classes_dir.mkdir(parents=True, exist_ok=True)
+            for xml_path in index_dir.glob("*.xml"):
+                shutil.copy2(xml_path, classes_dir / xml_path.name)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
     headers = cfg.get("headers", "")
     tool = Path(__file__).resolve().parent / "comment_doc_gen.py"
     globs = [g for g in headers.split(",") if g.strip()]
