@@ -317,6 +317,26 @@ def _tag_inner(xml_content, open_tag, close_tag, body):
     return xml_content[:m.start()] + m.group(1) + body + m.group(3) + xml_content[m.end():]
 
 
+def _line_indent(xml_content, pos):
+    """pos 所在行的行首空白缩进。"""
+    line_start = xml_content.rfind("\n", 0, pos) + 1
+    return xml_content[line_start:pos]
+
+
+def _inner_lines(raw_lines):
+    """整理注释行：去空行、去行首尾空白。"""
+    return [l.strip() for l in raw_lines if l.strip()]
+
+
+def _element_inner(xml_content, open_pos, raw_lines, fallback):
+    """构造元素内嵌内容：每注释行占一行，缩进比 open 标签行深一级。
+    [return] 含首尾换行与对齐的 inner；配合元素结束标签置于 open 标签行缩进处。"""
+    lines = _inner_lines(raw_lines)
+    tag_indent = _line_indent(xml_content, open_pos)
+    content_indent = (tag_indent + "\t") if tag_indent else fallback
+    return "\n" + content_indent + ("\n" + content_indent).join(lines) + "\n" + tag_indent
+
+
 def inject_doc(xml_content, doc, indent="\t"):
     """把解析出的文档数据注入 XML：类简介、方法描述、成员描述。"""
     # 类级 brief_description
@@ -337,12 +357,12 @@ def inject_doc(xml_content, doc, indent="\t"):
             else:
                 break
         if owner and owner in doc.method_docs:
-            body = _indent(_clean(doc.method_docs[owner]), indent)
+            inner = _element_inner(xml_content, d_start, doc.method_docs[owner], indent + "\t")
             inner_start = d_start + len("<description>")
             inner_end = d_end - len("</description>")
-            replacements.append((inner_start, inner_end, body))
-    for inner_start, inner_end, body in sorted(replacements, key=lambda x: x[0], reverse=True):
-        xml_content = xml_content[:inner_start] + body + xml_content[inner_end:]
+            replacements.append((inner_start, inner_end, inner))
+    for inner_start, inner_end, inner in sorted(replacements, key=lambda x: x[0], reverse=True):
+        xml_content = xml_content[:inner_start] + inner + xml_content[inner_end:]
 
     # 成员描述：<member name>...</member>（含自闭合展开）
     xml_content = _inject_elements(xml_content, doc.member_docs, "member", indent)
@@ -352,19 +372,24 @@ def inject_doc(xml_content, doc, indent="\t"):
 
 
 def _inject_elements(xml_content, docs, tag, indent):
-    """把 {name: 描述} 注入 <tag name>...</tag>，自闭合则展开。返回处理后的内容。"""
+    """把 {name: 描述} 注入 <tag name>...</tag>，自闭合则展开。内容行独立缩进。"""
     for name, raw in docs.items():
-        body = _indent(_clean(raw), indent)
         pair = re.compile(r'(<%s\s+name="%s"[^>]*>)(?P<body>.*?)(</%s>)'
                           % (re.escape(tag), re.escape(name), re.escape(tag)), re.DOTALL)
         m = pair.search(xml_content)
         if m:
-            xml_content = xml_content[:m.start()] + m.group(1) + body + m.group(3) + xml_content[m.end():]
+            inner = _element_inner(xml_content, m.start(), raw, indent + "\t")
+            xml_content = xml_content[:m.start()] + m.group(1) + inner + m.group(3) + xml_content[m.end():]
             continue
         selfc = re.compile(r'(<%s\s+name="%s")([^>]*)/>' % (re.escape(tag), re.escape(name)))
         m = selfc.search(xml_content)
         if m:
-            xml_content = xml_content[:m.start()] + m.group(1) + m.group(2) + ">\n" + body + "\n" + indent + "</%s>" % tag + xml_content[m.end():]
+            tag_indent = _line_indent(xml_content, m.start())
+            content_indent = (tag_indent + "\t") if tag_indent else (indent + "\t")
+            block = ("\n" + content_indent).join(_inner_lines(raw))
+            xml_content = (xml_content[:m.start()] + m.group(1) + m.group(2).rstrip()
+                           + ">\n" + content_indent + block + "\n" + tag_indent
+                           + "</%s>" % tag + xml_content[m.end():])
     return xml_content
 
 
