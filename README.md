@@ -191,17 +191,14 @@ func move(dir: Vector2) -> void:
 engine_bin_path: "<已编译含本模块的编辑器路径或所在目录>"
 # project_root 可缺省：默认取当前工作目录（在模块项目根执行即可）
 # project_root: "<模块项目根目录>"
-doc_classes:   # 可选：本模块公开类，缺省自动读取模块根 config.py 的 get_doc_classes()（AST 静态解析）
-  - MyClassA
-  - MyClassB
 classes_dir:   "doc/classes"
 headers:       "**/*.h"
 md_dir:        "doc/source/api"
 ```
 class.xsd 无需配置：build.py 会把工具集自带的 schema 复制到 `<project_root>/doc/class.xsd`，
-并让生成的 XML 引用该项目内副本，不引用项目外文件。`doc_classes` 可选：缺省时 build.py 用 AST 静态解析
-模块根 `config.py` 的 `get_doc_classes()` 自动取得本模块公开类清单（避免逐个声明），doctool 后据此只保留本模块的
-类 XML，剔除引擎倾泻的其它类；配置了 `doc_classes` 则以配置覆盖。
+并让生成的 XML 引用该项目内副本，不引用项目外文件。doctool 会把引擎全部类倾泻进 `doc/classes`，
+build.py 会用 AST 静态解析模块根 `config.py` 的 `get_doc_classes()` 自动取得本模块公开类清单，
+据此只保留本模块的类 XML、剔除其它引擎类，无需在配置中手动声明类名。
 
 `engine_bin_path` 可给**可执行文件完整路径**（如 `bin/godot.windows.editor.double.x86_64.console.exe`），
 也可给**所在目录**（自动在 `editor`/`editor.double`/`dev`/`console` 各变体中选最新可用项）。`-g` 为最高优先级的覆盖。
