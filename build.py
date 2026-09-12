@@ -26,6 +26,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # 使同目录兄弟模块可作为顶层模块导入（脚本直跑或 -m 均可用）
@@ -184,6 +185,25 @@ def _discover_doc_classes(project_root):
     return doc_classes
 
 
+def _iter_sibling_doc_dirs(project_root):
+    """枚举与目标模块同目录的兄弟模块（含 config.py 与 doc/classes 的独立模块仓库）。
+
+    Godot doctool 会把目标模块跑 d 时合并写回所有已注册模块的 doc/classes（原地写），
+    因此同一 <父目录> 下其它模块的类 XML 会被连带重排。这里仅收集这些兄弟模块，
+    供 doctool 前后做快照/还原，保证一次 -d 只影响目标模块。
+    [param project_root] 目标模块项目根[br]
+    [return] 兄弟模块 (module_root, doc_classes_dir) 生成器。
+    """
+    parent = project_root.parent
+    if not parent.is_dir():
+        return
+    for child in sorted(parent.iterdir()):
+        if child == project_root or not child.is_dir():
+            continue
+        if (child / "config.py").is_file() and (child / "doc" / "classes").is_dir():
+            yield child, child / "doc" / "classes"
+
+
 def run_doctool(cfg, godot_executable, verbose):
     project_root = _project_root(cfg)
     if not godot_executable:
@@ -208,6 +228,19 @@ def run_doctool(cfg, godot_executable, verbose):
     shutil.rmtree(scratch, ignore_errors=True)
     scratch.mkdir(parents=True)
 
+    # doctool 会原地写回所有注册模块的 doc/classes（含兄弟模块），故先快照、跑完还原，
+    # 使本次 -d 只影响目标模块。
+    siblings = list(_iter_sibling_doc_dirs(project_root))
+    snapshot_dirs = []
+    sibling_tmp = None
+    if siblings:
+        sibling_tmp = tempfile.mkdtemp(prefix="godot_docs_siblings_")
+        for mod_root, cls_dir in siblings:
+            snapshot = Path(sibling_tmp) / mod_root.name / "classes"
+            if cls_dir.is_dir():
+                shutil.copytree(cls_dir, snapshot)
+            snapshot_dirs.append((mod_root, cls_dir, snapshot))
+
     try:
         # --doctool 必须作为独立参数（无前后空格），否则被当作位置参数而静默失败
         args = [str(godot_executable), "--doctool", str(scratch)]
@@ -230,6 +263,14 @@ def run_doctool(cfg, godot_executable, verbose):
             for xml_path in index_dir.glob("*.xml"):
                 shutil.copy2(xml_path, classes_dir / xml_path.name)
     finally:
+        # 还原兄弟模块（doctool 原地写回的所有已注册模块 doc/classes），使本次 -d 只影响目标模块
+        if sibling_tmp is not None:
+            for mod_root, cls_dir, snapshot in snapshot_dirs:
+                if verbose:
+                    print("还原兄弟模块 doc/classes: %s" % cls_dir)
+                shutil.rmtree(cls_dir, ignore_errors=True)
+                shutil.copytree(snapshot, cls_dir)
+            shutil.rmtree(sibling_tmp, ignore_errors=True)
         shutil.rmtree(scratch, ignore_errors=True)
 
     headers = cfg.get("headers", "")
