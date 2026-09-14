@@ -119,6 +119,9 @@ sources:
 - 方法名通过第一个 `(` 前的最后一个标识符启发式提取；`GDVIRTUAL` 宏取括号内函数名。
 - 成员变量匹配 `类型 成员名;` 或 `类型 成员名 = 默认;`。
 - 枚举常量：`enum Name {` 体内的枚举项被识别，注释注入对应的 `<constant>`。
+- 信号声明：C++ 信号由 `ADD_SIGNAL` 在 `.cpp` 注册、头文件无声明，故用
+  `/// @signal <name>` 标记一个信号文档块；后续 `///` 行作为该信号描述（支持
+  `[param]`），直到下一行代码结束。注入到 XML 的 `<signal>`。
 
 ```cpp
 /// 字典工具类：提供字典结构相关的静态方法，不可实例化。
@@ -130,22 +133,20 @@ static bool has_same_keys_structure(Dictionary dict1, Dictionary dict2);
 /// 设置路径（含点号分隔的层级名）
 String setting_path = "";
 
-/// 释放模式
-enum FreeMode {
-	/// 立即释放源节点。
-	FREE_MODE_INSTANT = 0,
-	/// 延迟释放源节点（当前帧结束）。
-	FREE_MODE_DEFERRED = 1,
-	/// 不释放源节点。
-	FREE_MODE_NONE = 2,
-};
+/// @signal died
+/// 角色死亡。
+/// [param reason] 死亡原因。
+/// @signal leveled_up
+/// 角色升级。
+/// [param new_level] 升级后的等级。
 ```
 
 ### GDScript（`GDScriptParser`）
 
 - 文档注释行以 `##` 开头；单个 `#` 为普通注释，不提取。
 - 类名匹配 `class_name Foo`；变量匹配 `@export var name` 与 `var name`；
-  方法匹配 `func name(`。
+  方法匹配 `func name(`；信号匹配 `signal name`（可带参数列表 `signal name(a, b)`），
+  声明前的 `##` 注释作为该信号描述，注入 XML 的 `<signal>`。
 
 ```gdscript
 ## 玩家基础控制类，处理移动与输入。
@@ -153,6 +154,10 @@ class_name Player
 
 ## 当前速度
 @export var speed: float = 5.0
+
+## 受到伤害。
+## [param amount] 伤害值。
+signal health_changed(amount)
 
 ## 移动角色。[br][br]
 ## [param dir] 移动方向
@@ -171,10 +176,10 @@ func move(dir: Vector2) -> void:
 
 1. `load_config` → 读取配置或使用内置默认。
 2. `discover_sources` → 按 `sources`/`--headers` 匹配文件，路由到对应解析器。
-3. `Parser.parse` → 逐行累积注释块，遇到类/方法/成员声明时分发到
-   `DocClass`（类简介、方法字典、成员字典）。
+3. `Parser.parse` → 逐行累积注释块，遇到类/方法/成员/信号/常量声明时分发到
+   `DocClass`（类简介、方法字典、成员字典、信号字典、常量字典）。
 4. `inject_doc` → 将描述注入 XML 的 `brief_description`、
-   `<method>` 的 `<description>`、`<member>` 内文。
+   `<method>` 的 `<description>`、`<member>`、`<signal>`、`<constant>` 内文。
 5. `match_class_xml` → 按 `{类名}.xml` 定位文件，内容有变化才写回。
 
 内置解析器通过 `PARSERS` 注册表（扩展名 → 解析器类）路由。新增语言时继承

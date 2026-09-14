@@ -33,6 +33,7 @@ class DocClass:
     method_docs: dict = field(default_factory=dict)
     member_docs: dict = field(default_factory=dict)
     constant_docs: dict = field(default_factory=dict)
+    signal_docs: dict = field(default_factory=dict)
 
 
 class ParserBase:
@@ -56,14 +57,32 @@ class ParserBase:
         m = self.COMMENT_RE.match(line)
         return m.group(1).strip() if m else None
 
+    def _signal_marker(self, line):
+        """从注释行提取信号名；非信号声明返回 None。子类按需覆写。"""
+        return None
+
     def parse(self, lines):
         doc = DocClass()
         pending = []
+        cur_signal = None
         for line in lines:
+            sig = self._signal_marker(line)
+            if sig is not None:
+                cur_signal = sig
+                doc.signal_docs[sig] = []
+                pending = []
+                continue
             text = self._comment_text(line)
             if text is not None:
-                pending.append(text)
+                if cur_signal is not None:
+                    doc.signal_docs[cur_signal].append(text)
+                else:
+                    pending.append(text)
                 continue
+            if cur_signal is not None:
+                # 信号注释块遇到代码行即结束。
+                if self.is_code(line):
+                    cur_signal = None
             kind_name = self.classify(line)
             if kind_name:
                 kind, name = kind_name
@@ -75,6 +94,8 @@ class ParserBase:
                     doc.method_docs[name] = list(pending)
                 elif kind == "member" and pending:
                     doc.member_docs[name] = list(pending)
+                elif kind == "signal" and pending:
+                    doc.signal_docs[name] = list(pending)
                 elif kind == "constant":
                     if pending:
                         doc.constant_docs[name] = list(pending)
@@ -127,6 +148,11 @@ class CppParser(ParserBase):
         """提取 C++ 行尾 `///` 文档注释。"""
         m = re.search(r"//+\s+(.+?)\s*$", line)
         return [m.group(1).strip()] if m else None
+
+    def _signal_marker(self, line):
+        """提取 `/// @signal <name>` 形式的信号声明。"""
+        m = re.match(r"^\s*//+\s*@signal\s+([A-Za-z_]\w*)\s*$", line)
+        return m.group(1) if m else None
 
     # C++ 方法名启发式：第一个 '(' 之前的最后一个标识符。
     @staticmethod
@@ -181,6 +207,7 @@ class GDScriptParser(ParserBase):
     COMMENT_RE = re.compile(r"^\s*#+\s?(.*)$")
     NEUTRAL_RE = re.compile(r"^\s*#")
     CLASS_NAME_RE = re.compile(r"^\s*class_name\s+([A-Za-z_]\w*)")
+    SIGNAL_RE = re.compile(r"^\s*signal\s+([A-Za-z_]\w*)\b")
     FUNC_RE = re.compile(r"^\s*func\s+([A-Za-z_]\w*)\s*\(")
     MEMBER_RE = re.compile(r"^\s*(?:@export(?:\s+[A-Za-z:]+\([^)]*\))?\s+)?var\s+([A-Za-z_]\w*)")
 
@@ -193,6 +220,9 @@ class GDScriptParser(ParserBase):
         m = self.CLASS_NAME_RE.match(line)
         if m:
             return ("class", m.group(1))
+        m = self.SIGNAL_RE.match(line)
+        if m:
+            return ("signal", m.group(1))
         m = self.FUNC_RE.match(line)
         if m:
             return ("method", m.group(1))
@@ -384,14 +414,19 @@ def inject_doc(xml_content, doc, indent="\t"):
         offset = method_body.start()
         inner = _element_inner(xml_content, offset + dm.start(1), doc.method_docs[mname], indent + "\t")
         replacements.append((offset + dm.start(2), offset + dm.end(3) - len("</description>"), inner))
-    for sig in re.finditer(r"<signal\s+[^>]*>.*?</signal>", xml_content, re.DOTALL):
+    for sig in re.finditer(r"<signal\s+name=\"(\w+)\"[^>]*>.*?</signal>", xml_content, re.DOTALL):
+        sname = sig.group(1)
         dm = re.search(r"(<description>)(.*?)(</description>)", sig.group(0), re.DOTALL)
-        if dm:
-            open_pos = sig.start() + dm.start(1)
-            tag_indent = _line_indent(xml_content, open_pos)
-            replacements.append((sig.start() + dm.start(2),
-                                 sig.start() + dm.end(3) - len("</description>"),
-                                 "\n" + tag_indent))
+        if not dm:
+            continue
+        open_pos = sig.start() + dm.start(1)
+        tag_indent = _line_indent(xml_content, open_pos)
+        if sname in doc.signal_docs and doc.signal_docs[sname]:
+            inner = _element_inner(xml_content, open_pos, doc.signal_docs[sname], indent + "\t")
+        else:
+            inner = "\n" + tag_indent
+        replacements.append((sig.start() + dm.start(2),
+                             sig.start() + dm.end(3) - len("</description>"), inner))
     for inner_start, inner_end, inner in sorted(replacements, key=lambda x: x[0], reverse=True):
         xml_content = xml_content[:inner_start] + inner + xml_content[inner_end:]
 
