@@ -161,6 +161,24 @@ def _prune_classes(classes_dir, doc_classes):
             path.unlink()
 
 
+def _fix_class_schema(classes_dir):
+    """把 doctool 写的错误 schema 相对路径改写为项目内副本路径。
+
+    doctool 恒把 schemaLocation 写成面向模块位于引擎源码 modules/ 布局的
+    ../../../doc/class.xsd；custom_modules/* 上溯三级越界无法解析，统一改写为
+    ../class.xsd（即 <project_root>/doc/class.xsd）。与注释注入解耦，无条件执行，
+    使无源码注释的模块（如 voxel 的上游手写描述）也能得到正确 schema。
+    [param classes_dir] 类 XML 输出目录。
+    """
+    for xml_path in Path(classes_dir).glob("*.xml"):
+        text = xml_path.read_text(encoding="utf-8")
+        fixed = text.replace(
+            'xsi:noNamespaceSchemaLocation="../../../doc/class.xsd"',
+            'xsi:noNamespaceSchemaLocation="../class.xsd"')
+        if fixed != text:
+            xml_path.write_text(fixed, encoding="utf-8")
+
+
 def _discover_doc_classes(project_root):
     """从模块根 config.py 的 get_doc_classes() 读取本模块公开类清单。
 
@@ -272,6 +290,9 @@ def run_doctool(cfg, godot_executable, verbose):
                 shutil.copytree(snapshot, cls_dir)
             shutil.rmtree(sibling_tmp, ignore_errors=True)
         shutil.rmtree(scratch, ignore_errors=True)
+
+    # doctool 恒写坏 schema 相对路径，无论是否注入注释都需修正
+    _fix_class_schema(classes_dir)
 
     headers = cfg.get("headers", "")
     tool = Path(__file__).resolve().parent / "comment_doc_gen.py"

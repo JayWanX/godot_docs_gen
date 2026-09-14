@@ -75,8 +75,13 @@ class ParserBase:
                     doc.method_docs[name] = list(pending)
                 elif kind == "member" and pending:
                     doc.member_docs[name] = list(pending)
-                elif kind == "constant" and pending:
-                    doc.constant_docs[name] = list(pending)
+                elif kind == "constant":
+                    if pending:
+                        doc.constant_docs[name] = list(pending)
+                    else:
+                        trailing = self._trailing_doc(line)
+                        if trailing:
+                            doc.constant_docs[name] = trailing
                 pending = []
                 continue
             # 非类/方法/成员的行：若是实际代码则丢弃注释块（文档块结束）。
@@ -87,6 +92,10 @@ class ParserBase:
     def get_name(self):
         """从首个 class 声明解析类名；子类可覆写。"""
         raise NotImplementedError
+
+    def _trailing_doc(self, line):
+        """提取行尾文档注释。默认不支持，子类按各自注释符号覆写。"""
+        return None
 
 
 class CppParser(ParserBase):
@@ -114,10 +123,20 @@ class CppParser(ParserBase):
         if pattern:
             setattr(self, attr.upper(), re.compile(pattern))
 
+    def _trailing_doc(self, line):
+        """提取 C++ 行尾 `///` 文档注释。"""
+        m = re.search(r"//+\s+(.+?)\s*$", line)
+        return [m.group(1).strip()] if m else None
+
     # C++ 方法名启发式：第一个 '(' 之前的最后一个标识符。
     @staticmethod
     def _extract_method_name(line):
         if line.strip().startswith(("/", "#", "*")):
+            return None
+        eq = line.find("=")
+        op = line.find("(")
+        # `=` 出现在 `(` 之前：是成员初始化 `name = Type(...)`，而非方法声明。
+        if eq != -1 and (op == -1 or eq < op):
             return None
         before_paren = line.split("(", 1)[0]
         m = re.search(r"([A-Za-z_]\w*)\s*$", before_paren)
@@ -147,7 +166,12 @@ class CppParser(ParserBase):
             return ("method", name)
         m = self.MEMBER_RE.match(line)
         if m:
-            return ("member", m.group(1))
+            name = m.group(1)
+            # Godot 模块惯例：私有成员 `_field` 经 getter/setter 暴露为 `field`，
+            # XML 中属性名不带前导下划线，这里去掉以匹配。
+            if name.startswith("_"):
+                name = name[1:]
+            return ("member", name)
         return None
 
 
@@ -159,6 +183,11 @@ class GDScriptParser(ParserBase):
     CLASS_NAME_RE = re.compile(r"^\s*class_name\s+([A-Za-z_]\w*)")
     FUNC_RE = re.compile(r"^\s*func\s+([A-Za-z_]\w*)\s*\(")
     MEMBER_RE = re.compile(r"^\s*(?:@export(?:\s+[A-Za-z:]+\([^)]*\))?\s+)?var\s+([A-Za-z_]\w*)")
+
+    def _trailing_doc(self, line):
+        """提取 GDScript 行尾 `#` 文档注释。"""
+        m = re.search(r"#+\s+(.+?)\s*$", line)
+        return [m.group(1).strip()] if m else None
 
     def classify(self, line):
         m = self.CLASS_NAME_RE.match(line)
@@ -263,13 +292,10 @@ def discover_sources(cfg, headers_override=None):
     results = []
     for src in cfg.get("sources", []):
         lang = src.get("language", "cpp")
-        parser_name = "gdcscript" if lang == "gdscript" else "cpp"
         parser_cls = GDScriptParser if lang == "gdscript" else CppParser
-        regexes = cfg.get("languages", {}).get(lang, {}).get("regexes")
-        parser = parser_cls(regexes)
         for pattern in src["glob"].split(","):
             for path in _glob(pattern.strip()):
-                results.append((path, parser))
+                results.append((path, parser_cls))
     return results
 
 
@@ -345,22 +371,27 @@ def inject_doc(xml_content, doc, indent="\t"):
             xml_content, "<brief_description>", "</brief_description>",
             _indent(_clean(doc.class_comment), indent))
 
-    # 方法描述：填入 <method name> 下的 <description>
-    method_starts = [(m.start(), m.group(1)) for m in re.finditer(r'<method\s+name="(\w+)"', xml_content)]
-    descs = [(m.start(), m.end()) for m in re.finditer(r"<description>.*?</description>", xml_content, re.DOTALL)]
+    # 方法描述：只填 <method name>...</method> 块内部的 <description>。
+    # 信号描述没有独立注释来源，统一清空，杜绝方法块注释误串入 <signal>。
     replacements = []
-    for d_start, d_end in descs:
-        owner = None
-        for ms, mname in method_starts:
-            if ms < d_start:
-                owner = mname
-            else:
-                break
-        if owner and owner in doc.method_docs:
-            inner = _element_inner(xml_content, d_start, doc.method_docs[owner], indent + "\t")
-            inner_start = d_start + len("<description>")
-            inner_end = d_end - len("</description>")
-            replacements.append((inner_start, inner_end, inner))
+    for method_body in re.finditer(r'<method\s+name="(\w+)"[^>]*>.*?</method>', xml_content, re.DOTALL):
+        mname = method_body.group(1)
+        if mname not in doc.method_docs:
+            continue
+        dm = re.search(r"(<description>)(.*?)(</description>)", method_body.group(0), re.DOTALL)
+        if not dm:
+            continue
+        offset = method_body.start()
+        inner = _element_inner(xml_content, offset + dm.start(1), doc.method_docs[mname], indent + "\t")
+        replacements.append((offset + dm.start(2), offset + dm.end(3) - len("</description>"), inner))
+    for sig in re.finditer(r"<signal\s+[^>]*>.*?</signal>", xml_content, re.DOTALL):
+        dm = re.search(r"(<description>)(.*?)(</description>)", sig.group(0), re.DOTALL)
+        if dm:
+            open_pos = sig.start() + dm.start(1)
+            tag_indent = _line_indent(xml_content, open_pos)
+            replacements.append((sig.start() + dm.start(2),
+                                 sig.start() + dm.end(3) - len("</description>"),
+                                 "\n" + tag_indent))
     for inner_start, inner_end, inner in sorted(replacements, key=lambda x: x[0], reverse=True):
         xml_content = xml_content[:inner_start] + inner + xml_content[inner_end:]
 
