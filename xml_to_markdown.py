@@ -725,7 +725,7 @@ def process_xml_folder(src_dir, dst_dir, verbose):
     # Make output dir and remove old files
     if not os.path.isdir(dst_dir):
         if verbose:
-            print("Making output directory: " + dst_dir)
+            print("Making output directory: " + str(dst_dir))
         os.makedirs(dst_dir)
 
     for i in dst_dir.glob("*.md"):
