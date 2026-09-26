@@ -485,7 +485,8 @@ def match_class_xml(xml_path, doc, verbose=False, schema=None, classes_dir=None)
     new_content = _rewrite_schema_attribute(new_content, schema, classes_dir)
     if new_content == content:
         return False
-    with open(xml_path, "w", encoding="utf-8") as f:
+    # 显式 newline="\n"：默认换行翻译会在 Windows 上把 XML 写成 CRLF
+    with open(xml_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(new_content)
     return True
 

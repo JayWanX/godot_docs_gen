@@ -176,7 +176,8 @@ def _fix_class_schema(classes_dir):
             'xsi:noNamespaceSchemaLocation="../../../doc/class.xsd"',
             'xsi:noNamespaceSchemaLocation="../class.xsd"')
         if fixed != text:
-            xml_path.write_text(fixed, encoding="utf-8")
+            # 显式 newline="\n"：依赖 Python 默认换行翻译会在 Windows 上写成 CRLF
+            xml_path.write_text(fixed, encoding="utf-8", newline="\n")
 
 
 def _discover_doc_classes(project_root):

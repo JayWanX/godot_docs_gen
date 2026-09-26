@@ -681,7 +681,8 @@ def class_doc_to_markdown(
     if f_out == '-':
         print(out)
     else:
-        outfile = open(f_out, mode='a', encoding='utf-8')
+        # 显式 newline="\n"：默认换行翻译会在 Windows 上把 markdown 写成 CRLF
+        outfile = open(f_out, mode='a', encoding='utf-8', newline="\n")
         outfile.write(out)
 
 
@@ -717,7 +718,7 @@ def generate_classes_index(output_path, classes_by_name, verbose, module_class_n
     if verbose:
         print("Writing", output_path)
 
-    with open(output_path, mode='w', encoding='utf-8') as f:
+    with open(output_path, mode='w', encoding='utf-8', newline="\n") as f:
         f.write(out)
 
 
