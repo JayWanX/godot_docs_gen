@@ -61,7 +61,13 @@ class ParserBase:
         """从注释行提取信号名；非信号声明返回 None。子类按需覆写。"""
         return None
 
-    def parse(self, lines):
+    def parse_all(self, lines):
+        """解析源文件中出现的每个类，按出现顺序返回 DocClass 列表。
+
+        单个源文件含多个类时（如 `bt_task.h` 同时定义 `BT` 与 `BTTask`），
+        各类的注释互不串扰；旧实现只保留最后一个类，其余类的文档会丢失。
+        """
+        docs = []
         doc = DocClass()
         pending = []
         cur_signal = None
@@ -87,6 +93,10 @@ class ParserBase:
             if kind_name:
                 kind, name = kind_name
                 if kind == "class":
+                    # 遇到新类：结算上一个类
+                    if doc.name:
+                        docs.append(doc)
+                        doc = DocClass()
                     doc.name = name
                     if pending:
                         doc.class_comment = pending
@@ -108,7 +118,14 @@ class ParserBase:
             # 非类/方法/成员的行：若是实际代码则丢弃注释块（文档块结束）。
             if pending and self.is_code(line):
                 pending = []
-        return doc
+        if doc.name:
+            docs.append(doc)
+        return docs
+
+    def parse(self, lines):
+        """解析单个源文件，返回最后一个类的文档（兼容旧调用）。"""
+        docs = self.parse_all(lines)
+        return docs[-1] if docs else DocClass()
 
     def get_name(self):
         """从首个 class 声明解析类名；子类可覆写。"""
@@ -126,8 +143,9 @@ class CppParser(ParserBase):
     NEUTRAL_RE = re.compile(r"^\s*(?://|/\*|\*|#)")
     CLASS_RE = re.compile(r"^\s*class\s+([A-Za-z_]\w*)\s*(?::|\{)")
     GDVIRTUAL_RE = re.compile(r"^\s*GDVIRTUAL\w*\s*\(([A-Za-z_]\w*)\)")
-    MEMBER_RE = re.compile(r"^\s*(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*(?:\s*<[^>]*>)?\s+([A-Za-z_]\w*)(?:\s*=\s*[^;]+?)?\s*;")
-    ENUM_OPEN_RE = re.compile(r"^\s*enum(?:\s+class)?(?:\s+\w*)?\s*\{")
+    # 成员声明：支持指针/引用与多词类型（`Object *agent;`、`static const StringName X;`）
+    MEMBER_RE = re.compile(r"^\s*[A-Za-z_][\w:<>,\[\]\s*&]*[\s*&]([A-Za-z_]\w*)\s*(?:=[^;]*?)?\s*;\s*(?://.*)?$")
+    ENUM_OPEN_RE = re.compile(r"^\s*enum(?:\s+class)?(?:\s+\w+)?\s*(?::[^{]*)?\{")
     ENUM_END_RE = re.compile(r"^\s*\}")
     CONSTANT_RE = re.compile(r"^\s*([A-Za-z_]\w*)")
 
@@ -159,12 +177,16 @@ class CppParser(ParserBase):
     def _extract_method_name(line):
         if line.strip().startswith(("/", "#", "*")):
             return None
-        eq = line.find("=")
-        op = line.find("(")
-        # `=` 出现在 `(` 之前：是成员初始化 `name = Type(...)`，而非方法声明。
-        if eq != -1 and (op == -1 or eq < op):
+        # 先剥掉行尾注释：枚举行 `IDLE, // ... update() ...` 的 `update()` 会被误判为方法名。
+        code = re.sub(r"//.*$", "", line)
+        if "(" not in code:
             return None
-        before_paren = line.split("(", 1)[0]
+        eq = code.find("=")
+        op = code.find("(")
+        # `=` 出现在 `(` 之前：是成员初始化 `name = Type(...)`，而非方法声明。
+        if eq != -1 and eq < op:
+            return None
+        before_paren = code.split("(", 1)[0]
         m = re.search(r"([A-Za-z_]\w*)\s*$", before_paren)
         return m.group(1) if m else None
 
@@ -355,22 +377,28 @@ def _glob(pattern):
 
 # ---------- 注入 ----------
 
+def _escape_xml(text):
+    """XML 文本转义：注释里可以写裸 & < >，写回 XML 前必须转义。
+
+    注：旧实现直接注入未转义文本，只因注释注入对无 `///` 注释的模块恒 0 命中而未暴露。
+    """
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _clean(raw_lines):
-    return "\n".join(l.strip() for l in raw_lines if l.strip()).strip()
+    return _escape_xml("\n".join(l.strip() for l in raw_lines if l.strip()).strip())
 
 
-def _indent(text, indent):
-    return "\n".join(indent + t if t.strip() else "" for t in text.split("\n"))
+def _split_class_comment(raw_lines):
+    """类注释块按首个空注释行拆成 (brief, description) 两段。
 
-
-def _tag_inner(xml_content, open_tag, close_tag, body):
-    """替换 <open>...</close> 的 inner。返回替换后内容；找不到原样返回。"""
-    pattern = re.compile(
-        r"(%s)(?P<body>.*?)(%s)" % (re.escape(open_tag), re.escape(close_tag)), re.DOTALL)
-    m = pattern.search(xml_content)
-    if not m:
-        return xml_content
-    return xml_content[:m.start()] + m.group(1) + body + m.group(3) + xml_content[m.end():]
+    首段写入 ``<brief_description>``，空注释行之后的段落写入 ``<description>``。
+    整块无空行时全部作为 brief，与旧行为一致（向后兼容只写单段的模块）。
+    """
+    for i, line in enumerate(raw_lines):
+        if not line.strip():
+            return raw_lines[:i], raw_lines[i + 1:]
+    return raw_lines, []
 
 
 def _line_indent(xml_content, pos):
@@ -380,8 +408,8 @@ def _line_indent(xml_content, pos):
 
 
 def _inner_lines(raw_lines):
-    """整理注释行：去空行、去行首尾空白。"""
-    return [l.strip() for l in raw_lines if l.strip()]
+    """整理注释行：去空行、去行首尾空白，并做 XML 转义。"""
+    return [_escape_xml(l.strip()) for l in raw_lines if l.strip()]
 
 
 def _element_inner(xml_content, open_pos, raw_lines, fallback):
@@ -393,13 +421,39 @@ def _element_inner(xml_content, open_pos, raw_lines, fallback):
     return "\n" + content_indent + ("\n" + content_indent).join(lines) + "\n" + tag_indent
 
 
+def _inject_class_tag(xml_content, tag, raw_lines, fallback):
+    """注入类级标签（``brief_description`` / ``description``）的内容。
+
+    这两个标签没有 ``name`` 属性；且 ``<description>`` 在方法块里另有同名标签，
+    所以 ``description`` 从 ``</brief_description>`` 之后开始找，避免命中方法描述。
+    内容按 :func:`_element_inner` 独立成行缩进，与引擎原生 XML 排版一致。
+    """
+    open_tag = "<%s>" % tag
+    close_tag = "</%s>" % tag
+    start = 0
+    if tag == "description":
+        brief_end = xml_content.find("</brief_description>")
+        if brief_end >= 0:
+            start = brief_end
+    pos = xml_content.find(open_tag, start)
+    if pos < 0:
+        return xml_content
+    end = xml_content.find(close_tag, pos + len(open_tag))
+    if end < 0:
+        return xml_content
+    inner = _element_inner(xml_content, pos, raw_lines, fallback)
+    return xml_content[:pos] + open_tag + inner + close_tag + xml_content[end + len(close_tag):]
+
+
 def inject_doc(xml_content, doc, indent="\t"):
     """把解析出的文档数据注入 XML：类简介、方法描述、成员描述。"""
-    # 类级 brief_description
+    # 类级注释：首个空注释行之前 → brief_description，之后 → description
     if doc.class_comment:
-        xml_content = _tag_inner(
-            xml_content, "<brief_description>", "</brief_description>",
-            _indent(_clean(doc.class_comment), indent))
+        brief_lines, desc_lines = _split_class_comment(doc.class_comment)
+        if _clean(brief_lines):
+            xml_content = _inject_class_tag(xml_content, "brief_description", brief_lines, indent + "\t")
+        if _clean(desc_lines):
+            xml_content = _inject_class_tag(xml_content, "description", desc_lines, indent + "\t")
 
     # 方法描述：只填 <method name>...</method> 块内部的 <description>。
     # 信号描述没有独立注释来源，统一清空，杜绝方法块注释误串入 <signal>。
@@ -437,9 +491,58 @@ def inject_doc(xml_content, doc, indent="\t"):
     return xml_content
 
 
+def _field_alias_candidates(attrs):
+    """从 <member ... setter="set_x" getter="get_y"> 推导 C++ 字段名候选项。
+
+    属性名与字段名不一致是常态（ADD_PROPERTY 的 setter/getter 常带 _param 等后缀），
+    注释键必须等于 C++ 字段名，故用 setter/getter 去掉 set_/get_/is_ 前缀后作为别名再试一次。
+    """
+    out = []
+    for key in ("setter", "getter"):
+        m = re.search(r'\b%s="([^"]+)"' % key, attrs)
+        if not m:
+            continue
+        fn = m.group(1)
+        for pre in ("set_", "get_", "is_"):
+            if fn.startswith(pre):
+                fn = fn[len(pre):]
+                break
+        if fn:
+            out.append(fn)
+    return out
+
+
+def _resolve_element_doc(tag, xml_name, attrs, docs):
+    """先按 XML 的 name 精确匹配；member 未命中时按 setter/getter 推导的字段名再试。"""
+    raw = docs.get(xml_name)
+    if raw is not None:
+        return raw
+    if tag != "member":
+        return None
+    for alias in _field_alias_candidates(attrs):
+        if alias in docs:
+            return docs[alias]
+    return None
+
+
 def _inject_elements(xml_content, docs, tag, indent):
     """把 {name: 描述} 注入 <tag name>...</tag>，自闭合则展开。内容行独立缩进。"""
-    for name, raw in docs.items():
+    if not docs:
+        return xml_content
+    done = set()
+    while True:
+        hit = None
+        for m in re.finditer(r'<%s\s+name="([^"]+)"([^>]*)>' % re.escape(tag), xml_content):
+            if m.group(1) in done:
+                continue
+            raw = _resolve_element_doc(tag, m.group(1), m.group(2), docs)
+            if raw is not None:
+                hit = (m.group(1), raw)
+                break
+        if hit is None:
+            break
+        name, raw = hit
+        done.add(name)
         pair = re.compile(r'(<%s\s+name="%s"[^>]*>)(?P<body>.*?)(</%s>)'
                           % (re.escape(tag), re.escape(name), re.escape(tag)), re.DOTALL)
         m = pair.search(xml_content)
@@ -520,17 +623,17 @@ def main(argv=None):
         except OSError as e:
             print("读取失败 %s: %s" % (path, e))
             continue
-        doc = parser().parse(lines)
-        if not doc.name or (not doc.class_comment and not doc.method_docs and not doc.member_docs and not doc.constant_docs):
-            continue
-        xml_path = os.path.join(classes_dir, doc.name + ".xml")
-        if args.verbose:
-            print("source: %s -> %s (members=%d methods=%d)" % (
-                path, xml_path, len(doc.member_docs), len(doc.method_docs)))
-        if args.dry_run:
-            continue
-        if match_class_xml(xml_path, doc, args.verbose, schema=schema, classes_dir=classes_dir):
-            patched += 1
+        for doc in parser().parse_all(lines):
+            if not doc.name or (not doc.class_comment and not doc.method_docs and not doc.member_docs and not doc.constant_docs):
+                continue
+            xml_path = os.path.join(classes_dir, doc.name + ".xml")
+            if args.verbose:
+                print("source: %s -> %s (members=%d methods=%d)" % (
+                    path, xml_path, len(doc.member_docs), len(doc.method_docs)))
+            if args.dry_run:
+                continue
+            if match_class_xml(xml_path, doc, args.verbose, schema=schema, classes_dir=classes_dir):
+                patched += 1
     print("Patched %d XML files" % patched)
     return 0
 

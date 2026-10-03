@@ -21,6 +21,7 @@
 """
 
 import getopt
+import hashlib
 import os
 import platform
 import shutil
@@ -207,9 +208,10 @@ def _discover_doc_classes(project_root):
 def _iter_sibling_doc_dirs(project_root):
     """枚举与目标模块同目录的兄弟模块（含 config.py 与 doc/classes 的独立模块仓库）。
 
-    Godot doctool 会把目标模块跑 d 时合并写回所有已注册模块的 doc/classes（原地写），
-    因此同一 <父目录> 下其它模块的类 XML 会被连带重排。这里仅收集这些兄弟模块，
-    供 doctool 前后做快照/还原，保证一次 -d 只影响目标模块。
+    Godot doctool 会把目标模块跑 -d 时**原地重写**所有已注册模块的 doc/classes
+    （doc_data_class_path.gen.h 存绝对路径，main.cpp 只给相对路径补 doc_tool_path），
+    因此同一 <父目录> 下其它模块的类 XML 会被连带改写。这里收集这些兄弟模块，
+    供 doctool 之后逐个修回被写坏的 schemaLocation，保证一次 -d 名义上只影响目标模块。
     [param project_root] 目标模块项目根[br]
     [return] 兄弟模块 (module_root, doc_classes_dir) 生成器。
     """
@@ -223,8 +225,48 @@ def _iter_sibling_doc_dirs(project_root):
             yield child, child / "doc" / "classes"
 
 
+def _acquire_lock(project_root):
+    """取 doctool 互斥锁，返回 (锁文件路径, 是否成功)。
+
+    doctool 会原地重写**所有**注册模块的 doc/classes，而 --doctool 目标目录只承接
+    其中本模块那份。两个进程并发跑时后跑者会把先跑者的还原结果重新覆盖，事后无法
+    区分是谁污染的。故用 O_EXCL 串行化；锁残留说明上次运行被异常终止。
+    锁放系统临时目录而非模块仓库内，避免污染各模块的 git status。
+    [param project_root] 模块项目根[br]
+    [return] (锁文件路径, 是否取得锁)。
+    """
+    key = hashlib.md5(str(project_root).lower().encode("utf-8")).hexdigest()[:12]
+    lock = Path(tempfile.gettempdir()) / ("godot_docs_lock_%s_%s" % (project_root.name, key))
+    if lock.exists():
+        return lock, False
+    try:
+        fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except (FileExistsError, OSError):
+        return lock, False
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(str(os.getpid()))
+    return lock, True
+
+
+def _release_lock(lock):
+    """释放 doctool 互斥锁，失败只告警不抛（清理阶段不应掩盖主流程错误）。"""
+    try:
+        lock.unlink()
+    except OSError as e:
+        print("警告: 未能删除 doctool 锁 %s（%s），请手动清理" % (lock, e))
+
+
 def run_doctool(cfg, godot_executable, verbose):
     project_root = _project_root(cfg)
+
+    # doctool 原地重写所有注册模块的 doc/classes，并发会互相污染，先串行化。
+    lock, acquired = _acquire_lock(project_root)
+    if not acquired:
+        print("Error: 存在未清理的 doctool 锁 %s" % lock)
+        print("       另一个 %s 的 doctool 可能正在运行；确认无运行中的进程后删除该文件再重试。"
+              % project_root.name)
+        return 1
+
     if not godot_executable:
         bin_path = Path(cfg.get("engine_bin_path")) if cfg.get("engine_bin_path") else None
         if bin_path is not None and bin_path.is_file():
@@ -233,32 +275,26 @@ def run_doctool(cfg, godot_executable, verbose):
         else:
             if bin_path is None or not bin_path.is_dir():
                 print("Error: 未指定 Godot 路径（-g）且配置 engine_bin_path 无效（应为可执行文件或所在目录）")
+                _release_lock(lock)
                 return 1
             godot_executable = find_godot(bin_path)
             if godot_executable is None:
+                _release_lock(lock)
                 return 1
     if verbose:
         print("Found Godot at: %s" % godot_executable)
 
     # doctool 会把引擎全部内置模块（csg/gdscript/gltf 等）的类文档按相对路径
     # modules/<m>/doc_classes 写到 --doctool 目标目录下；若直接在模块根跑会虚构出 modules/。
-    # 因此用项目内临时目录承接输出，跑完仅把本模块的类 XML 合并回 classes_dir，其余全部丢弃。
-    scratch = project_root / ".doctool_tmp"
-    shutil.rmtree(scratch, ignore_errors=True)
-    scratch.mkdir(parents=True)
+    # 因此用临时目录承接输出，跑完仅把本模块的类 XML 合并回 classes_dir，其余全部丢弃。
+    # 该目录一次产出两千余个文件，放系统临时目录且**不回收**：本机沙箱会拦下这种规模的
+    # 删除（SAFE_DELETE_BULK_CONFIRM_REQUIRED，命中即终止进程），跑完再删等于白跑一次。
+    scratch = Path(tempfile.mkdtemp(prefix="godot_docs_scratch_"))
+    if verbose:
+        print("Scratch: %s（跑完不自动清理，可手动删除）" % scratch)
 
-    # doctool 会原地写回所有注册模块的 doc/classes（含兄弟模块），故先快照、跑完还原，
-    # 使本次 -d 只影响目标模块。
+    # doctool 会原地重写所有注册模块的 doc/classes（含兄弟模块），故跑完要逐个修回。
     siblings = list(_iter_sibling_doc_dirs(project_root))
-    snapshot_dirs = []
-    sibling_tmp = None
-    if siblings:
-        sibling_tmp = tempfile.mkdtemp(prefix="godot_docs_siblings_")
-        for mod_root, cls_dir in siblings:
-            snapshot = Path(sibling_tmp) / mod_root.name / "classes"
-            if cls_dir.is_dir():
-                shutil.copytree(cls_dir, snapshot)
-            snapshot_dirs.append((mod_root, cls_dir, snapshot))
 
     try:
         # --doctool 必须作为独立参数（无前后空格），否则被当作位置参数而静默失败
@@ -282,15 +318,19 @@ def run_doctool(cfg, godot_executable, verbose):
             for xml_path in index_dir.glob("*.xml"):
                 shutil.copy2(xml_path, classes_dir / xml_path.name)
     finally:
-        # 还原兄弟模块（doctool 原地写回的所有已注册模块 doc/classes），使本次 -d 只影响目标模块
-        if sibling_tmp is not None:
-            for mod_root, cls_dir, snapshot in snapshot_dirs:
+        # doctool 会原地重写所有注册模块的 doc/classes：doc_data_class_path.gen.h 存的是
+        # 绝对路径，而 main.cpp 只给相对路径补 doc_tool_path，故绝对路径原样落地。
+        # 实测它对兄弟模块只改坏 schemaLocation 这一行（描述与成员都被 merge_from 保留），
+        # 因此跑完逐个幂等修回即等价于「未污染」，无需整目录快照回拷——后者需要 rmtree
+        # 整个目录，会被本机批量删除保护拦下并静默失败（曾致 178 个文件被污染）。
+        # 收尾必须包在嵌套 finally 里：清理本身失败不能打断主流程，也不能漏掉释放锁。
+        try:
+            for _, cls_dir in siblings:
                 if verbose:
-                    print("还原兄弟模块 doc/classes: %s" % cls_dir)
-                shutil.rmtree(cls_dir, ignore_errors=True)
-                shutil.copytree(snapshot, cls_dir)
-            shutil.rmtree(sibling_tmp, ignore_errors=True)
-        shutil.rmtree(scratch, ignore_errors=True)
+                    print("修回兄弟模块 schemaLocation: %s" % cls_dir)
+                _fix_class_schema(cls_dir)
+        finally:
+            _release_lock(lock)
 
     # doctool 恒写坏 schema 相对路径，无论是否注入注释都需修正
     _fix_class_schema(classes_dir)

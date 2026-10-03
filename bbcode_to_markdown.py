@@ -131,6 +131,10 @@ def format_doc_bbcodes_for_markdown(text, multiline, fmt):
                 # Simple emphasis, usually italic
                 out += '*'
 
+            elif bb_node.name == 'b':
+                # 简单强调，通常渲染为粗体
+                out += '**'
+
             elif in_code:
                 # Code can contain stuff that looks like unknown BBCodes.
                 out += bb_node.to_string()
